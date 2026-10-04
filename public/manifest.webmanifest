@@ -1,0 +1,9 @@
+{
+  "name": "EchoStep 移动听写",
+  "short_name": "EchoStep",
+  "start_url": "./",
+  "display": "standalone",
+  "background_color": "#f5f7fb",
+  "theme_color": "#1769e0",
+  "lang": "zh-CN"
+}
