@@ -1,7 +1,25 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
-import { courseForLesson, exportRecords, lessonById, persist, saveAttempt, setDownloaded, state, updateTokenClassification } from './store';
-import type { ErrorCategory, Lesson, PracticeAttempt, PracticeView } from './types';
+import { courseForLesson, exportRecords, lessonById, persist, saveAttempt, state, updateTokenClassification } from './store';
+import {
+  endSession,
+  formatSize,
+  isCached,
+  isProtected,
+  offlineAvailable,
+  protectedReasons,
+  reconcileCache,
+  refreshLesson,
+  requestDownload,
+  requestRemoval,
+  setFailNextWrite,
+  startHeartbeat,
+  stopHeartbeat,
+  touchSession,
+  touchUsage,
+  usedWithReserved
+} from './ledger';
+import type { ErrorCategory, Lesson, OfflinePackage, PracticeAttempt, PracticeView, ProtectedReason } from './types';
 import { compareSentence, scoreAttempt, segmentText } from './utils';
 
 const view = ref<PracticeView>(state.activeLessonId ? 'practice' : 'library');
@@ -13,6 +31,9 @@ const segmentStart = ref(0);
 const segmentEnd = ref(1);
 const teacherAttemptId = ref(state.attempts[0]?.id ?? '');
 const teacherDraft = ref(state.attempts[0]?.teacherFeedback ?? '');
+const busyLessonId = ref('');
+const failDrill = ref(false);
+const cacheMissing = ref<string[]>([]);
 let toastTimer = 0;
 
 const activeLesson = computed(() => lessonById(state.activeLessonId));
@@ -38,6 +59,78 @@ const resultSentence = computed(() => resultAttempt.value?.sentenceAttempts[sele
 const teacherAttempt = computed(() => state.attempts.find((attempt) => attempt.id === teacherAttemptId.value));
 const totalWords = computed(() => state.attempts.flatMap((attempt) => attempt.sentenceAttempts).flatMap((item) => item.tokens).length);
 const correctedWords = computed(() => state.attempts.flatMap((attempt) => attempt.sentenceAttempts).flatMap((item) => item.tokens).filter((token) => !token.correct && token.category !== 'unclassified').length);
+
+// ---- 容量账本 -------------------------------------------------------------
+const capacity = computed(() => state.capacity);
+const usedBytes = computed(() => usedWithReserved());
+const capacityPercent = computed(() => Math.min(100, Math.round((usedBytes.value / capacity.value.budgetBytes) * 100)));
+const readyCount = computed(() => Object.values(capacity.value.packages).filter((entry) => entry.phase === 'ready').length);
+const queuedCount = computed(() => capacity.value.queue.length);
+const protectedCount = computed(() => Object.values(capacity.value.packages).filter((entry) => isProtected(entry.lessonId)).length);
+const ledgerPackages = computed(() =>
+  [...Object.values(capacity.value.packages)].sort((a, b) => Date.parse(b.lastUsedAt) - Date.parse(a.lastUsedAt))
+);
+
+const PROTECTION_LABELS: Record<ProtectedReason, string> = {
+  active: '作答中',
+  draft: '未提交草稿',
+  submitted: '已提交记录',
+  feedback: '教师反馈'
+};
+
+const PHASE_LABELS: Record<OfflinePackage['phase'], string> = {
+  ready: '可用',
+  queued: '排队中',
+  downloading: '下载中',
+  updating: '更新中',
+  removing: '移除中',
+  failed: '失败'
+};
+
+function packageOf(lessonId: string): OfflinePackage | undefined {
+  return state.capacity.packages[lessonId];
+}
+
+function packagePhase(lessonId: string): OfflinePackage['phase'] | 'absent' {
+  return packageOf(lessonId)?.phase ?? 'absent';
+}
+
+function lessonVersionText(lesson: Lesson): string {
+  const entry = packageOf(lesson.id);
+  return entry ? `v${entry.version.slice(0, 6)}` : '—';
+}
+
+async function toggleDownload(lesson: Lesson, value: boolean) {
+  if (busyLessonId.value) return;
+  busyLessonId.value = lesson.id;
+  try {
+    if (value) {
+      const result = await requestDownload(lesson.id);
+      notify(result.message);
+    } else {
+      notify(await requestRemoval(lesson.id));
+    }
+  } finally {
+    busyLessonId.value = '';
+  }
+}
+
+async function updateLesson(lesson: Lesson) {
+  if (busyLessonId.value) return;
+  busyLessonId.value = lesson.id;
+  try {
+    const result = await refreshLesson(lesson.id);
+    notify(result.message);
+  } finally {
+    busyLessonId.value = '';
+  }
+}
+
+function toggleFailDrill(value: boolean | string | number) {
+  failDrill.value = Boolean(value);
+  setFailNextWrite(failDrill.value);
+}
+
 
 const categoryOptions: Array<{ value: ErrorCategory; label: string }> = [
   { value: 'unclassified', label: '未分类' },
@@ -87,13 +180,30 @@ function notify(message: string) {
 }
 
 function startLesson(lesson: Lesson) {
+  // 离线入口：断网时只有已落地离线包可用（排队中/被淘汰的课节会拦住）
+  if (!navigator.onLine && !offlineAvailable(lesson.id)) {
+    notify('该课节尚未下载，联网后下载即可离线作答');
+    return;
+  }
   const progress = state.progress[lesson.id] ?? { answers: {}, activeSentenceId: lesson.sentences[0].id, updatedAt: new Date().toISOString() };
   state.progress[lesson.id] = progress;
   state.activeLessonId = lesson.id;
   state.activeSentenceId = progress.activeSentenceId || lesson.sentences[0].id;
   currentAnswer.value = progress.answers[state.activeSentenceId] ?? '';
   view.value = 'practice';
+  // 受保护：当前课节 + 最后使用时间（影响 LRU 顺序）
+  touchSession(lesson.id);
+  touchUsage(lesson.id);
+  startHeartbeat(() => state.activeLessonId);
   persist();
+}
+
+function leavePractice() {
+  stopHeartbeat();
+  endSession();
+  state.activeLessonId = '';
+  persist();
+  view.value = 'library';
 }
 
 function goToSentence(index: number) {
@@ -107,6 +217,7 @@ function goToSentence(index: number) {
     progress.updatedAt = new Date().toISOString();
   }
   currentAnswer.value = progress?.answers[target.id] ?? '';
+  touchUsage(lesson.id);
   window.scrollTo({ top: 0, behavior: 'smooth' });
 }
 
@@ -219,7 +330,8 @@ function onConnectionChange() {
 }
 
 function onVisibilityChange() {
-  if (document.visibilityState === 'hidden') persist();
+  if (document.visibilityState === 'hidden' && state.activeLessonId) touchSession(state.activeLessonId);
+  persist();
 }
 
 onMounted(() => {
@@ -227,6 +339,19 @@ onMounted(() => {
   window.addEventListener('offline', onConnectionChange);
   window.addEventListener('visibilitychange', onVisibilityChange);
   window.addEventListener('pagehide', persist);
+  // SW 就绪后对账真实缓存，发现丢失的离线包（被浏览器清掉等）提示重新下载
+  const reconcile = () => reconcileCache().then((missing) => {
+    cacheMissing.value = missing;
+  }).catch(() => undefined);
+  if (navigator.serviceWorker) {
+    navigator.serviceWorker.addEventListener('controllerchange', reconcile);
+    navigator.serviceWorker.ready.then(reconcile).catch(() => undefined);
+    window.setTimeout(reconcile, 400);
+  }
+  if (state.activeLessonId) {
+    touchSession(state.activeLessonId);
+    startHeartbeat(() => state.activeLessonId);
+  }
 });
 
 onBeforeUnmount(() => {
@@ -234,6 +359,8 @@ onBeforeUnmount(() => {
   window.removeEventListener('offline', onConnectionChange);
   window.removeEventListener('visibilitychange', onVisibilityChange);
   window.removeEventListener('pagehide', persist);
+  stopHeartbeat();
+  endSession();
   persist();
 });
 </script>
@@ -269,6 +396,44 @@ onBeforeUnmount(() => {
           <span>{{ online ? '本地优先存储' : '恢复网络后继续保存' }}</span>
         </div>
 
+        <section class="panel ledger-card">
+          <div class="ledger-head">
+            <div><h3>容量账本</h3><p>下载先预占空间；不足时排队，装不下才淘汰最久未用且未受保护的内容</p></div>
+            <span class="level-badge">{{ readyCount }} 个离线包</span>
+          </div>
+          <var-progress :value="capacityPercent" :color="capacityPercent > 90 ? '#d83b45' : '#1769e0'" />
+          <div class="ledger-bar-meta">
+            <span>已占 {{ formatSize(usedBytes) }} / {{ formatSize(capacity.budgetBytes) }}</span>
+            <span v-if="capacity.reservedBytes">预占 {{ formatSize(capacity.reservedBytes) }}</span>
+            <span v-if="queuedCount">队列 {{ queuedCount }}</span>
+            <span>受保护 {{ protectedCount }}</span>
+          </div>
+          <div v-if="queuedCount" class="queue-line">
+            <strong>下载队列</strong>
+            <span v-for="id in capacity.queue" :key="id">
+              {{ lessonById(id)?.title }} · {{ formatSize(packageOf(id)?.pendingSizeBytes || 0) }}
+            </span>
+          </div>
+          <div class="ledger-list">
+            <div v-for="entry in ledgerPackages" :key="entry.lessonId" class="ledger-item" :class="{ protected: isProtected(entry.lessonId) }">
+              <div class="ledger-item-main">
+                <strong>{{ lessonById(entry.lessonId)?.title ?? entry.lessonId }}</strong>
+                <span>v{{ entry.version.slice(0, 6) }} · {{ formatSize(entry.phase === 'ready' ? entry.sizeBytes : entry.pendingSizeBytes) }} · {{ PHASE_LABELS[entry.phase] }}</span>
+                <span v-if="entry.phase === 'ready' && !isCached(entry.lessonId)" class="mini-badge warn">缓存未核验</span>
+              </div>
+              <div class="ledger-item-tags">
+                <span v-for="reason in protectedReasons(entry.lessonId)" :key="reason" class="protect-tag">{{ PROTECTION_LABELS[reason] }}</span>
+                <span v-if="!isProtected(entry.lessonId) && entry.phase === 'ready'" class="evict-tag">可被 LRU 淘汰</span>
+              </div>
+            </div>
+            <p v-if="!ledgerPackages.length" class="ledger-empty">还没有离线包，在下方课程库打开下载开关。</p>
+          </div>
+          <label class="fail-drill">
+            <var-switch :model-value="failDrill" @update:model-value="toggleFailDrill($event as boolean)" />
+            <span>故障演练：下一次包写入失败（演示更新失败回滚原包）</span>
+          </label>
+        </section>
+
         <div class="section-head">
           <h3>课程库</h3>
           <div class="segmented">
@@ -282,11 +447,45 @@ onBeforeUnmount(() => {
             <div><h3>{{ course.title }}</h3><p>{{ course.description }}</p></div>
             <span class="level-badge">{{ course.level }}</span>
           </div>
-          <div v-for="lesson in course.lessons" :key="lesson.id" class="lesson-row">
-            <div><h4>{{ lesson.title }}</h4><p>{{ lesson.subtitle }} · {{ lesson.sentences.length }} 句 · 约 {{ lesson.estimatedMinutes }} 分钟</p></div>
-            <div class="lesson-actions">
-              <var-switch :model-value="lesson.downloaded" @update:model-value="setDownloaded(lesson.id, $event as boolean)" />
-              <var-button type="primary" size="small" @click="startLesson(lesson)">{{ lesson.downloaded ? '继续' : '开始' }}</var-button>
+          <div v-for="lesson in course.lessons" :key="lesson.id" class="lesson-row ledger-row">
+            <div class="lesson-main">
+              <h4>
+                {{ lesson.title }}
+                <span v-if="cacheMissing.includes(lesson.id)" class="mini-badge warn">缓存丢失 · 请重下</span>
+                <span v-else-if="isProtected(lesson.id)" class="mini-badge protect">受保护</span>
+                <span v-else-if="packagePhase(lesson.id) === 'ready'" class="mini-badge ok">可离线</span>
+              </h4>
+              <p>{{ lesson.subtitle }} · {{ lesson.sentences.length }} 句 · 约 {{ lesson.estimatedMinutes }} 分钟</p>
+              <p class="ledger-meta">
+                <span>{{ lessonVersionText(lesson) }}</span>
+                <span>{{ formatSize(packageOf(lesson.id)?.sizeBytes || (packageOf(lesson.id)?.pendingSizeBytes || 0)) }}</span>
+                <span v-if="packageOf(lesson.id)?.phase === 'ready'">最近使用 {{ formatDate(packageOf(lesson.id)!.lastUsedAt) }}</span>
+                <span v-else-if="packageOf(lesson.id)">{{ PHASE_LABELS[packageOf(lesson.id)!.phase] }}</span>
+                <span v-else>未下载</span>
+              </p>
+              <div v-if="protectedReasons(lesson.id).length" class="protect-tags">
+                <span v-for="reason in protectedReasons(lesson.id)" :key="reason" class="protect-tag">{{ PROTECTION_LABELS[reason] }}</span>
+              </div>
+            </div>
+            <div class="lesson-actions ledger-actions">
+              <var-switch
+                :model-value="packagePhase(lesson.id) === 'ready'"
+                :disabled="!!busyLessonId || ['downloading', 'updating', 'removing'].includes(packagePhase(lesson.id))"
+                @update:model-value="toggleDownload(lesson, $event as boolean)"
+              />
+              <var-button
+                :type="offlineAvailable(lesson.id) ? 'primary' : 'default'"
+                size="small"
+                :disabled="busyLessonId === lesson.id"
+                @click="startLesson(lesson)"
+              >{{ offlineAvailable(lesson.id) ? '继续' : '开始' }}</var-button>
+              <var-button
+                v-if="packagePhase(lesson.id) === 'ready'"
+                size="small"
+                variant="outline"
+                :disabled="busyLessonId === lesson.id"
+                @click="updateLesson(lesson)"
+              >更新</var-button>
             </div>
           </div>
         </article>
@@ -305,9 +504,13 @@ onBeforeUnmount(() => {
       <div v-else-if="view === 'practice' && activeLesson" class="page">
         <header class="practice-header">
           <div class="practice-nav">
-            <button class="back-button" aria-label="返回课程库" @click="view = 'library'">‹</button>
+            <button class="back-button" aria-label="返回课程库" @click="leavePractice">‹</button>
             <div><h2>{{ activeLesson.title }}</h2></div>
             <span class="status-chip">{{ online ? '在线' : '离线' }}</span>
+          </div>
+          <div class="practice-offline">
+            <span v-if="packageOf(activeLesson.id)">离线包 v{{ packageOf(activeLesson.id)!.version.slice(0, 6) }} · {{ formatSize(packageOf(activeLesson.id)!.sizeBytes) }}</span>
+            <span class="protect-tag">当前课节受保护 · 不会被容量淘汰</span>
           </div>
           <div class="progress-line">
             <div class="sentence-count"><span>第 {{ currentIndex + 1 }} / {{ activeLesson.sentences.length }} 句</span><span>{{ lessonCompletion }}% 已填写</span></div>
@@ -341,7 +544,7 @@ onBeforeUnmount(() => {
 
       <div v-else-if="view === 'result' && resultAttempt" class="page">
         <header class="topbar">
-          <button class="back-button" aria-label="返回课程库" @click="view = 'library'">‹</button>
+          <button class="back-button" aria-label="返回课程库" @click="leavePractice">‹</button>
           <span class="status-chip">提交于 {{ formatDate(resultAttempt.submittedAt) }}</span>
           <button class="icon-button" @click="downloadRecords">导出</button>
         </header>

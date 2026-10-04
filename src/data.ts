@@ -1,5 +1,8 @@
 import type { Course, PersistedState } from './types';
 
+/** createInitialState 不含容量账本，由 store 迁移时补齐，避免 data ↔ ledger 循环依赖 */
+type InitialStateShape = Omit<PersistedState, 'capacity'> & { capacity?: PersistedState['capacity'] };
+
 export const demoCourses: Course[] = [
   {
     id: 'daily-life',
@@ -64,8 +67,8 @@ export const demoCourses: Course[] = [
   }
 ];
 
-export const createInitialState = (): PersistedState => ({
-  schemaVersion: 1,
+export const createInitialState = (): InitialStateShape => ({
+  schemaVersion: 2,
   courses: structuredClone(demoCourses),
   attempts: [
     {

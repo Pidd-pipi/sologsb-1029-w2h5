@@ -127,3 +127,32 @@ button, input, textarea { font: inherit; }
   .app-shell { min-height: calc(100dvh - 36px); border-radius: 28px; }
 }
 @media (prefers-reduced-motion: reduce) { * { scroll-behavior: auto !important; transition: none !important; } }
+.ledger-card { padding: 15px 16px; }
+.ledger-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 10px; margin-bottom: 11px; }
+.ledger-head h3 { margin: 0; font-size: .95rem; }
+.ledger-head p { margin: 4px 0 0; color: var(--muted); font-size: .68rem; line-height: 1.45; }
+.ledger-bar-meta { display: flex; flex-wrap: wrap; gap: 6px 12px; margin-top: 8px; color: var(--muted); font-size: .66rem; }
+.queue-line { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 9px; margin-top: 11px; padding: 9px 11px; border-radius: 11px; background: var(--soft); font-size: .66rem; }
+.queue-line strong { color: var(--primary); }
+.queue-line span { color: var(--muted); }
+.ledger-list { margin-top: 11px; display: flex; flex-direction: column; gap: 7px; }
+.ledger-item { display: flex; justify-content: space-between; gap: 9px; align-items: center; border: 1px solid var(--line); border-radius: 12px; padding: 9px 11px; }
+.ledger-item.protected { border-color: color-mix(in srgb, var(--success) 45%, var(--line)); background: color-mix(in srgb, var(--success) 7%, var(--card)); }
+.ledger-item-main { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.ledger-item-main strong { font-size: .78rem; }
+.ledger-item-main span { color: var(--muted); font-size: .63rem; }
+.ledger-item-tags { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; flex: 0 0 auto; }
+.ledger-empty { margin: 6px 0; color: var(--muted); font-size: .68rem; text-align: center; }
+.protect-tag, .evict-tag, .mini-badge { display: inline-flex; align-items: center; border-radius: 999px; padding: 2px 7px; font-size: .59rem; font-weight: 700; white-space: nowrap; }
+.protect-tag { background: color-mix(in srgb, var(--success) 15%, transparent); color: var(--success); }
+.evict-tag { background: var(--line); color: var(--muted); }
+.mini-badge.ok { background: color-mix(in srgb, var(--success) 15%, transparent); color: var(--success); }
+.mini-badge.protect { background: color-mix(in srgb, var(--success) 15%, transparent); color: var(--success); }
+.mini-badge.warn { background: #fff0f0; color: var(--danger); }
+.ledger-row { grid-template-columns: minmax(0, 1fr) auto; }
+.lesson-main { min-width: 0; }
+.ledger-meta { display: flex; flex-wrap: wrap; gap: 4px 10px; }
+.protect-tags { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 7px; }
+.ledger-actions { flex-direction: column; align-items: flex-end; gap: 6px; }
+.practice-offline { display: flex; flex-wrap: wrap; gap: 5px 10px; align-items: center; margin-top: 9px; font-size: .64rem; color: var(--muted); }
+.fail-drill { display: flex; align-items: center; gap: 9px; margin-top: 12px; padding-top: 10px; border-top: 1px dashed var(--line); color: var(--muted); font-size: .65rem; line-height: 1.4; }
