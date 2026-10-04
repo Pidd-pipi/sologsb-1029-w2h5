@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
-import { courseForLesson, exportRecords, lessonById, persist, saveAttempt, setDownloaded, state, updateTokenClassification } from './store';
+import { cancelQueueItem, courseForLesson, exportRecords, lessonById, mergePending, persist, protectionReasons, quotaBytes, removeDownload, requestDownload, saveAttempt, state, touchPackage, updateTokenClassification, usedBytes } from './store';
 import type { ErrorCategory, Lesson, PracticeAttempt, PracticeView } from './types';
 import { compareSentence, scoreAttempt, segmentText } from './utils';
 
@@ -38,6 +38,21 @@ const resultSentence = computed(() => resultAttempt.value?.sentenceAttempts[sele
 const teacherAttempt = computed(() => state.attempts.find((attempt) => attempt.id === teacherAttemptId.value));
 const totalWords = computed(() => state.attempts.flatMap((attempt) => attempt.sentenceAttempts).flatMap((item) => item.tokens).length);
 const correctedWords = computed(() => state.attempts.flatMap((attempt) => attempt.sentenceAttempts).flatMap((item) => item.tokens).filter((token) => !token.correct && token.category !== 'unclassified').length);
+const usedPercent = computed(() => (quotaBytes() ? Math.round((usedBytes() / quotaBytes()) * 100) : 0));
+
+const protectionLabels: Record<string, string> = {
+  active: '作答中',
+  draft: '未提交草稿',
+  submitted: '练习记录/反馈',
+  pendingMerge: '待合并'
+};
+
+const pkgFor = (lessonId: string) => state.ledger.packages[lessonId];
+const queuedFor = (lessonId: string) => state.ledger.queue.find((item) => item.lessonId === lessonId);
+const isProtected = (lessonId: string) => protectionReasons(lessonId).length > 0;
+const protectionLabel = (lessonId: string) => protectionReasons(lessonId).map((reason) => protectionLabels[reason]).join(' · ');
+const formatKB = (bytes: number) => `${Math.max(1, Math.round(bytes / 1000))} KB`;
+const lessonTitle = (lessonId: string) => lessonById(lessonId)?.title ?? lessonId;
 
 const categoryOptions: Array<{ value: ErrorCategory; label: string }> = [
   { value: 'unclassified', label: '未分类' },
@@ -87,6 +102,13 @@ function notify(message: string) {
 }
 
 function startLesson(lesson: Lesson) {
+  if (!online.value && !lesson.downloaded) {
+    notify('离线状态下不可用，请先在有网络时下载该课节');
+    return;
+  }
+  const orphaned = mergePending(lesson.id);
+  if (orphaned > 0) notify(`课节已更新，${orphaned} 句旧草稿已移除`);
+  touchPackage(lesson.id);
   const progress = state.progress[lesson.id] ?? { answers: {}, activeSentenceId: lesson.sentences[0].id, updatedAt: new Date().toISOString() };
   state.progress[lesson.id] = progress;
   state.activeLessonId = lesson.id;
@@ -94,6 +116,19 @@ function startLesson(lesson: Lesson) {
   currentAnswer.value = progress.answers[state.activeSentenceId] ?? '';
   view.value = 'practice';
   persist();
+}
+
+function toggleDownload(lesson: Lesson, value: boolean) {
+  if (value) {
+    const outcome = requestDownload(lesson.id);
+    if (outcome === 'queued') notify('离线容量不足，已加入下载队列');
+    else if (outcome === 'updated') notify('已更新到新版本，草稿已保留');
+    else if (outcome === 'downloaded') notify('下载完成，离线可用');
+  } else {
+    if (isProtected(lesson.id) && !window.confirm(`该课节${protectionLabel(lesson.id)}，受保护。移除离线包不会删除练习记录与草稿，确认移除？`)) return;
+    removeDownload(lesson.id);
+    notify('离线包已移除');
+  }
 }
 
 function goToSentence(index: number) {
@@ -269,6 +304,21 @@ onBeforeUnmount(() => {
           <span>{{ online ? '本地优先存储' : '恢复网络后继续保存' }}</span>
         </div>
 
+        <section class="ledger-card">
+          <div class="ledger-head">
+            <strong>离线容量账本</strong>
+            <span>{{ formatKB(usedBytes()) }} / {{ formatKB(quotaBytes()) }}</span>
+          </div>
+          <var-progress :value="usedPercent" :color="usedPercent >= 90 ? '#e05a5a' : '#1769e0'" />
+          <p class="ledger-hint">受保护课节（作答中、未提交草稿、练习记录与反馈）不会被自动淘汰；容量不足时先排队，腾出空间后自动装回。</p>
+          <div v-if="state.ledger.queue.length" class="queue-list">
+            <div v-for="item in state.ledger.queue" :key="item.lessonId" class="queue-item">
+              <span>{{ item.reason === 'update' ? '更新排队中' : '排队中' }} · {{ lessonTitle(item.lessonId) }}</span>
+              <button class="queue-cancel" @click="cancelQueueItem(item.lessonId)">取消排队</button>
+            </div>
+          </div>
+        </section>
+
         <div class="section-head">
           <h3>课程库</h3>
           <div class="segmented">
@@ -283,9 +333,19 @@ onBeforeUnmount(() => {
             <span class="level-badge">{{ course.level }}</span>
           </div>
           <div v-for="lesson in course.lessons" :key="lesson.id" class="lesson-row">
-            <div><h4>{{ lesson.title }}</h4><p>{{ lesson.subtitle }} · {{ lesson.sentences.length }} 句 · 约 {{ lesson.estimatedMinutes }} 分钟</p></div>
+            <div>
+              <h4>{{ lesson.title }}</h4>
+              <p>{{ lesson.subtitle }} · {{ lesson.sentences.length }} 句 · 约 {{ lesson.estimatedMinutes }} 分钟</p>
+              <div class="lesson-tags">
+                <span v-if="queuedFor(lesson.id)" class="tag tag-queue">{{ queuedFor(lesson.id)?.reason === 'update' ? '更新排队中' : '排队中' }}</span>
+                <span v-else-if="pkgFor(lesson.id)?.status === 'downloaded'" class="tag tag-ok">可离线 · {{ formatKB(pkgFor(lesson.id)!.size) }}</span>
+                <span v-else-if="pkgFor(lesson.id)?.status === 'evicted'" class="tag tag-evicted">已淘汰 · 需重新下载</span>
+                <span v-else class="tag">未下载</span>
+                <span v-if="isProtected(lesson.id)" class="tag tag-protect">🔒 {{ protectionLabel(lesson.id) }}</span>
+              </div>
+            </div>
             <div class="lesson-actions">
-              <var-switch :model-value="lesson.downloaded" @update:model-value="setDownloaded(lesson.id, $event as boolean)" />
+              <var-switch :model-value="lesson.downloaded" @update:model-value="toggleDownload(lesson, $event as boolean)" />
               <var-button type="primary" size="small" @click="startLesson(lesson)">{{ lesson.downloaded ? '继续' : '开始' }}</var-button>
             </div>
           </div>
@@ -308,6 +368,7 @@ onBeforeUnmount(() => {
             <button class="back-button" aria-label="返回课程库" @click="view = 'library'">‹</button>
             <div><h2>{{ activeLesson.title }}</h2></div>
             <span class="status-chip">{{ online ? '在线' : '离线' }}</span>
+            <span class="status-chip" :class="{ 'chip-warn': !activeLesson.downloaded }">{{ activeLesson.downloaded ? '已下载' : '未下载' }}</span>
           </div>
           <div class="progress-line">
             <div class="sentence-count"><span>第 {{ currentIndex + 1 }} / {{ activeLesson.sentences.length }} 句</span><span>{{ lessonCompletion }}% 已填写</span></div>

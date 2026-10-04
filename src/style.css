@@ -122,6 +122,24 @@ button, input, textarea { font: inherit; }
 .segmented button.active { background: var(--card); color: var(--text); box-shadow: 0 1px 5px rgb(0 0 0 / .09); font-weight: 700; }
 .empty-state { text-align: center; padding: 36px 20px; color: var(--muted); }
 .empty-state strong { display: block; color: var(--text); margin-bottom: 7px; }
+.ledger-card { background: var(--card); border: 1px solid var(--line); border-radius: 16px; padding: 14px; margin-bottom: 13px; box-shadow: 0 8px 26px rgb(28 44 72 / .06); }
+.ledger-head { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 8px; }
+.ledger-head strong { font-size: .86rem; }
+.ledger-head span { font-size: .72rem; color: var(--muted); font-variant-numeric: tabular-nums; }
+.ledger-hint { margin: 8px 0 0; font-size: .66rem; color: var(--muted); line-height: 1.5; }
+.queue-list { margin-top: 10px; display: grid; gap: 6px; }
+.queue-item { display: flex; justify-content: space-between; align-items: center; gap: 8px; font-size: .72rem; padding: 7px 10px; border-radius: 10px; background: var(--soft); color: var(--primary); }
+.queue-cancel { border: 0; background: transparent; color: var(--danger); font-size: .7rem; cursor: pointer; padding: 2px 4px; }
+.lesson-tags { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 7px; }
+.tag { border-radius: 999px; padding: 2px 8px; font-size: .62rem; font-weight: 700; background: var(--soft); color: var(--muted); white-space: nowrap; }
+.tag-ok { background: #e9f8f2; color: var(--success); }
+.tag-queue { background: #fff6dc; color: #795300; }
+.tag-evicted { background: #fff0f0; color: var(--danger); }
+.tag-protect { background: var(--soft); color: var(--primary); }
+.chip-warn { background: #fff0f0; color: var(--danger); }
+[data-theme='dark'] .tag-ok { background: rgb(19 138 99 / .18); }
+[data-theme='dark'] .tag-queue { background: rgb(214 158 46 / .16); color: #e8c36a; }
+[data-theme='dark'] .tag-evicted, [data-theme='dark'] .chip-warn { background: rgb(216 59 69 / .16); }
 @media (min-width: 600px) {
   body { padding: 18px 0; }
   .app-shell { min-height: calc(100dvh - 36px); border-radius: 28px; }

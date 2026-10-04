@@ -1,6 +1,9 @@
 export type ErrorCategory = 'unclassified' | 'spelling' | 'omitted' | 'extra' | 'punctuation' | 'grammar';
 export type PracticeView = 'library' | 'practice' | 'result' | 'teacher';
 export type ThemeMode = 'light' | 'dark';
+export type PackageStatus = 'downloaded' | 'evicted';
+export type ProtectionReason = 'active' | 'draft' | 'submitted' | 'pendingMerge';
+export type DownloadOutcome = 'already' | 'downloaded' | 'updated' | 'queued';
 
 export interface Sentence {
   id: string;
@@ -63,8 +66,31 @@ export interface LessonProgress {
   updatedAt: string;
 }
 
+export interface OfflinePackage {
+  lessonId: string;
+  version: number;
+  size: number;
+  lastUsedAt: string;
+  downloadedAt: string;
+  protected: boolean;
+  pendingMerge: boolean;
+  status: PackageStatus;
+}
+
+export interface DownloadQueueItem {
+  lessonId: string;
+  requestedAt: string;
+  reason: 'download' | 'update';
+}
+
+export interface CapacityLedger {
+  quota: number;
+  packages: Record<string, OfflinePackage>;
+  queue: DownloadQueueItem[];
+}
+
 export interface PersistedState {
-  schemaVersion: 1;
+  schemaVersion: 2;
   courses: Course[];
   attempts: PracticeAttempt[];
   progress: Record<string, LessonProgress>;
@@ -73,6 +99,7 @@ export interface PersistedState {
   theme: ThemeMode;
   fontScale: number;
   role: 'learner' | 'teacher';
+  ledger: CapacityLedger;
 }
 
 export interface TextSegment {
